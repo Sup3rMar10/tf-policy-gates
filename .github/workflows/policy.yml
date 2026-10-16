@@ -1,0 +1,43 @@
+name: policy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CONFTEST: openpolicyagent/conftest:v0.71.1
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+      - run: terraform fmt -check
+      - run: terraform init -input=false
+      - run: terraform validate
+
+      - name: Unit-test the policies themselves
+        run: docker run --rm -v "$PWD:/project" -w /project $CONFTEST verify --policy policy
+
+      - name: Plan with good values, then check policies (must pass)
+        run: |
+          terraform plan -input=false -out=good.tfplan
+          terraform show -json good.tfplan > good.json
+          docker run --rm -v "$PWD:/project" -w /project $CONFTEST test --policy policy good.json
+
+      - name: Negative test, a bad plan must be rejected
+        run: |
+          terraform plan -input=false -var-file=bad.tfvars -out=bad.tfplan
+          terraform show -json bad.tfplan > bad.json
+          if docker run --rm -v "$PWD:/project" -w /project $CONFTEST test --policy policy bad.json; then
+            echo "::error::policies accepted a plan they should have rejected"
+            exit 1
+          fi
+          echo "bad plan was rejected, as intended"
